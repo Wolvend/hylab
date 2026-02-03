@@ -287,27 +287,34 @@ This is the current baseline in the repository as of 2026-02-02:
 - `scan`: inventory mods and write `mods.json` and `mods.csv`.
 - `plan`: generate pairwise test groups and write `plan.json`.
 - `boot`: execute plan groups and write a boot CSV report.
+- `join`: optional authenticated join tests via `JoinCommand`.
+- `report`: summarize results to CSV/JSON/JUnit/Markdown.
+- `proofcheck`: static validation and proof ledger.
+- `bisect`: ddmin-style isolation of failing sets.
+- `repro`: EULA-safe repro bundles with manifests.
+- `scenario`: run scripted steps against a booted server.
+- `deps`: dependency preflight reports.
 
 ## 7.2 What the Script Does Today
 - Scans a ModsSource directory and lists `.jar` and `.zip` mods.
 - Generates pairwise coverage groups with random sampling.
 - Boots the server for each group using offline auth and log pattern matching.
-- Captures stdout/stderr into per-test log folders.
-- Writes CSV reports for boot results and JSON for plans.
+- Optionally runs authenticated join tests via a user-supplied join command.
+- Captures stdout/stderr into per-test log folders and JSONL trace logs.
+- Writes CSV/JSON/JUnit/Markdown reports for results and summaries.
 
 ## 7.3 Current Config Keys
 ServerRoot, AssetsZip, ModsSource, WorkDir, TemplateDir, RunsDir, ReportsDir,
 ReprosDir, LogsDir, PortStart, PortEnd, MaxParallel, Xmx, Xms,
-BootTimeoutSeconds, ReadyPatterns, ErrorPatterns, PairwiseGroupSize,
-PairwiseTriesPerGroup, PairwiseSeed.
+BootTimeoutSeconds, JoinCommand, JoinTimeoutSeconds, JoinAuthMode,
+ReadyPatterns, ErrorPatterns, PairwiseGroupSize, PairwiseTriesPerGroup,
+PairwiseSeed, plus adaptive throttling and trace settings.
 
 ## 7.4 Gaps and Missing Features
-- No `report` command implementation.
-- No `bisect` or isolation logic.
-- No repro bundle creation.
+- Join lane depends on an external client command for actual connection tests.
 - No cross-platform core (PowerShell is Windows-focused).
-- Limited static validation of mods and assets.
-- No structured logging or metrics.
+- Asset lane runtime checks still minimal.
+- CI templates and parity tests still missing.
 
 # 8. Requirements (Functional and Non-Functional)
 Requirements are the baseline contract for any implementation.
@@ -654,7 +661,7 @@ outputs.
 - Boot: server starts, reaches ready state, no fatal errors.
 - Asset validation: verify mod assets and manifests without booting the server.
 - Scenario: scripted commands or events to verify basic behavior.
-- Join: client connection or bot join to verify network handshake.
+- Join: client connection or bot join to verify network handshake (via JoinCommand).
 - Load: multiple bots or repeated joins to test stability.
 - Regression: specific known mod combos or past failures.
 
@@ -1157,6 +1164,9 @@ Notes:
     "ProcessPriority": { "type": "string", "default": "BelowNormal" },
     "CpuAffinityMode": { "type": "string", "default": "all" },
     "BootTimeoutSeconds": { "type": "integer", "minimum": 0, "default": 180 },
+    "JoinCommand": { "type": "string", "default": "" },
+    "JoinTimeoutSeconds": { "type": "integer", "minimum": 0, "default": 60 },
+    "JoinAuthMode": { "type": "string", "default": "authenticated" },
     "ReadyPatterns": {
       "type": "array",
       "items": { "type": "string" },
@@ -1196,6 +1206,8 @@ Validation rules (logic beyond JSON Schema):
 - AdaptiveSpikeHoldSec must be >= 0.
 - ProcessPriority must be one of: Idle, BelowNormal, Normal, AboveNormal, High.
 - CpuAffinityMode must be all, round-robin, or mask:0xF.
+- JoinTimeoutSeconds must be >= 0.
+- JoinAuthMode must be one of: offline, authenticated.
 
 ## 37.3 Inventory Schema (mods.json)
 This is the output of `scan`. Current script emits a subset; hashes are optional.

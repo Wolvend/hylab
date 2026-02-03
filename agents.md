@@ -14,10 +14,10 @@ agents. It should be sufficient to continue work without re-deriving context.
 - Local-only: `skills/` and `dist/` may exist in dev environments.
 
 ## Current Repository Snapshot (2026-02-02)
-- Implemented commands: `scan`, `plan`, `boot`, `report`, `proofcheck`, `bisect`, `repro`, `scenario`.
+- Implemented commands: `scan`, `plan`, `boot`, `join`, `report`, `proofcheck`, `bisect`, `repro`, `scenario`, `deps`.
 - Runtime: PowerShell script and JSON config.
 - Directories: `config/`, `runs/`, `reports/`, `repros/`, `logs/`.
-- Open gaps: join lane, asset lane runtime checks, cross-platform runner core, CI templates.
+- Open gaps: join client automation (requires external join command), asset lane runtime checks, cross-platform runner core, CI templates.
 
 ## Core Principles (Non-Negotiable)
 - Determinism: same inputs and seed must yield same outputs.
@@ -53,6 +53,7 @@ Required commands:
 - `scan`: inventory mods, output `mods.json` and `mods.csv`.
 - `plan`: generate `plan.json` with coverage.
 - `boot`: execute plan, output boot report CSV.
+- `join`: optional authenticated join tests via `JoinCommand`.
 - `report`: summarize results and export summary outputs.
 - `bisect`: minimize failing mod sets.
 - `repro`: package EULA-safe repro bundle.

@@ -36,12 +36,13 @@ If the bundled `HytaleServer.aot` does not match your Java build, disable AOT:
 2. `./modlab.ps1 scan`
 3. `./modlab.ps1 plan`
 4. `./modlab.ps1 boot`
-5. `./modlab.ps1 report`
-6. `./modlab.ps1 proofcheck`
-7. `./modlab.ps1 bisect`
-8. `./modlab.ps1 repro`
-9. `./modlab.ps1 scenario -ScenarioPath .\scenario.json`
-10. `./modlab.ps1 deps`
+5. `./modlab.ps1 join` (optional authenticated join)
+6. `./modlab.ps1 report`
+7. `./modlab.ps1 proofcheck`
+8. `./modlab.ps1 bisect`
+9. `./modlab.ps1 repro`
+10. `./modlab.ps1 scenario -ScenarioPath .\scenario.json`
+11. `./modlab.ps1 deps`
 
 ## Quick commands (cheat sheet)
 | Task | Command |
@@ -49,6 +50,7 @@ If the bundled `HytaleServer.aot` does not match your Java build, disable AOT:
 | Scan mods | `./modlab.ps1 scan` |
 | Plan coverage | `./modlab.ps1 plan` |
 | Boot tests | `./modlab.ps1 boot` |
+| Join tests | `./modlab.ps1 join` |
 | Report | `./modlab.ps1 report -Json -Csv -Junit` |
 | Proofcheck | `./modlab.ps1 proofcheck` |
 | Bisect | `./modlab.ps1 bisect -BisectStatus fail,timeout` |
@@ -59,6 +61,7 @@ If the bundled `HytaleServer.aot` does not match your Java build, disable AOT:
 ## Output selection (report)
 - `./modlab.ps1 report -Json -Csv -Junit`
 - `./modlab.ps1 report -Out .\reports\custom`
+- `./modlab.ps1 report -Lane join -RunId <runId>`
 
 ## Dependency preflight
 - `./modlab.ps1 deps`
@@ -91,6 +94,7 @@ Example:
 - `proof.json`: proofcheck ledger (from `proofcheck`)
 - `repros/manifest.json`: repro bundle manifest (from `repro`)
 - `reports/boot-<RunId>.csv`: boot results (from `boot`)
+- `reports/join-<RunId>.csv`: join results (from `join`)
 - `reports/summary-<RunId>.md`: human summary (from `report`)
 - `reports/<RunId>.junit.xml`: CI-friendly results (from `report`)
 - `reports/trace-<RunId>.jsonl`: structured trace events
@@ -101,6 +105,19 @@ Example:
 - Most settings can be overridden with `HYLAB_*` env vars.
 - Keep `config/hylab.json` local; do not commit it.
 - Contract details and schema notes live in `paper.md`.
+
+## Join tests (optional)
+Join tests start the server with authenticated mode and run a user-supplied
+command to attempt a client connection. Configure:
+- `JoinCommand` (string, optional) or `HYLAB_JOIN_COMMAND`
+- `JoinAuthMode` (`authenticated` or `offline`, default `authenticated`)
+- `JoinTimeoutSeconds` or `HYLAB_JOIN_TIMEOUT_SECONDS`
+
+JoinCommand supports placeholders:
+- `{host}` `127.0.0.1`
+- `{port}` server port
+- `{runId}` `{testId}`
+- `{testDir}` `{logDir}`
 
 ## Definitions
 - RunId: unique run identifier used to group results and artifacts.

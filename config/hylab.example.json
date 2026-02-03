@@ -56,6 +56,9 @@
     "UNUSED LOG ARGUMENTS",
     "Error in scheduler task"
   ],
+  "JoinCommand": "",
+  "JoinTimeoutSeconds": 60,
+  "JoinAuthMode": "authenticated",
   "PairwiseGroupSize": 10,
   "PairwiseTriesPerGroup": 200,
   "PairwiseSeed": 1337

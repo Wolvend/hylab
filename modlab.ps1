@@ -1,6 +1,6 @@
 param(
   [Parameter(Position=0)]
-  [ValidateSet('help','scan','plan','boot','report','proofcheck','bisect','repro','scenario','deps','tune-memory')]
+  [ValidateSet('help','scan','plan','boot','join','report','proofcheck','bisect','repro','scenario','deps','tune-memory')]
   [string]$Command = 'help',
   [Alias('config')]
   [string]$ConfigPath = "${PSScriptRoot}\config\hylab.json",
@@ -73,6 +73,9 @@ function Apply-EnvOverrides {
     Xmx = $env:HYLAB_XMX
     Xms = $env:HYLAB_XMS
     BootTimeoutSeconds = $env:HYLAB_BOOT_TIMEOUT_SECONDS
+    JoinCommand = $env:HYLAB_JOIN_COMMAND
+    JoinTimeoutSeconds = $env:HYLAB_JOIN_TIMEOUT_SECONDS
+    JoinAuthMode = $env:HYLAB_JOIN_AUTH_MODE
     DepOverridesPath = $env:HYLAB_DEP_OVERRIDES
     ExcludesPath = $env:HYLAB_EXCLUDES
     ResourceSampleIntervalSec = $env:HYLAB_RESOURCE_SAMPLE_INTERVAL_SEC
@@ -106,7 +109,7 @@ function Apply-EnvOverrides {
   foreach ($k in $map.Keys) {
     $v = $map[$k]
     if ($null -ne $v -and ($v.ToString().Trim().Length -gt 0)) {
-      if ($k -in @('PortStart','PortEnd','MaxParallel','BootTimeoutSeconds','PairwiseGroupSize','PairwiseTriesPerGroup','PairwiseSeed','ThrottleCpuPct','ThrottleMemPct','ThrottleCheckIntervalMs','ResourceLogIntervalSec','ResourceSampleIntervalSec','AdaptiveMinParallel','AdaptiveMaxParallel','AdaptiveSampleWindow','AdaptiveSpikePct','AdaptiveSpikeHoldSec','AdaptiveCpuHighPct','AdaptiveCpuLowPct','AdaptiveMemHighPct','AdaptiveMemLowPct','AdaptiveStepUp','AdaptiveStepDown','AdaptiveCooldownSec')) {
+      if ($k -in @('PortStart','PortEnd','MaxParallel','BootTimeoutSeconds','JoinTimeoutSeconds','PairwiseGroupSize','PairwiseTriesPerGroup','PairwiseSeed','ThrottleCpuPct','ThrottleMemPct','ThrottleCheckIntervalMs','ResourceLogIntervalSec','ResourceSampleIntervalSec','AdaptiveMinParallel','AdaptiveMaxParallel','AdaptiveSampleWindow','AdaptiveSpikePct','AdaptiveSpikeHoldSec','AdaptiveCpuHighPct','AdaptiveCpuLowPct','AdaptiveMemHighPct','AdaptiveMemLowPct','AdaptiveStepUp','AdaptiveStepDown','AdaptiveCooldownSec')) {
         $cfg.$k = [int]$v
       } elseif ($k -eq 'ErrorIgnorePatterns') {
         $parts = $v.ToString().Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -158,6 +161,8 @@ function Load-Config {
   if ($null -eq $cfg.AdaptiveStepUp) { $cfg.AdaptiveStepUp = 1 }
   if ($null -eq $cfg.AdaptiveStepDown) { $cfg.AdaptiveStepDown = 1 }
   if ($null -eq $cfg.AdaptiveCooldownSec) { $cfg.AdaptiveCooldownSec = 10 }
+  if ($null -eq $cfg.JoinTimeoutSeconds) { $cfg.JoinTimeoutSeconds = 60 }
+  if (-not $cfg.JoinAuthMode) { $cfg.JoinAuthMode = 'authenticated' }
   Apply-EnvOverrides -cfg $cfg
   if ($Parallel) { $cfg.MaxParallel = $Parallel }
   if ($Xmx) { $cfg.Xmx = $Xmx }
@@ -181,7 +186,7 @@ function Validate-Config {
     'ReprosDir','LogsDir','CacheDir','UseAOTCache','PortStart','PortEnd','MaxParallel','Xmx','Xms',
     'DepOverridesPath','ExcludesPath','ErrorIgnorePatterns','ResourceSampleIntervalSec','TraceLogLevel','DebugTailLines','ThrottleCpuPct','ThrottleMemPct','ThrottleCheckIntervalMs','ResourceLogIntervalSec','ProcessPriority','CpuAffinityMode',
     'AdaptiveThrottleEnabled','AdaptiveMinParallel','AdaptiveMaxParallel','AdaptiveSampleWindow','AdaptiveSpikePct','AdaptiveSpikeHoldSec','AdaptiveCpuHighPct','AdaptiveCpuLowPct','AdaptiveMemHighPct','AdaptiveMemLowPct','AdaptiveStepUp','AdaptiveStepDown','AdaptiveCooldownSec',
-    'BootTimeoutSeconds','ReadyPatterns','ErrorPatterns','PairwiseGroupSize',
+    'BootTimeoutSeconds','JoinCommand','JoinTimeoutSeconds','JoinAuthMode','ReadyPatterns','ErrorPatterns','PairwiseGroupSize',
     'PairwiseTriesPerGroup','PairwiseSeed'
   )
   $unknown = $cfg.PSObject.Properties.Name | Where-Object { $allowed -notcontains $_ }
@@ -227,10 +232,12 @@ function Validate-Config {
   if ($cfg.PairwiseGroupSize -lt 2) { throw "PairwiseGroupSize must be >= 2." }
   if ($cfg.PairwiseTriesPerGroup -lt 1) { throw "PairwiseTriesPerGroup must be >= 1." }
   if ($cfg.BootTimeoutSeconds -lt 0) { throw "BootTimeoutSeconds must be >= 0." }
+  if ($cfg.JoinTimeoutSeconds -lt 0) { throw "JoinTimeoutSeconds must be >= 0." }
   if (-not ($cfg.Xmx -match '^\d+(K|M|G)$')) { throw "Xmx must match format like 2G, 512M." }
   if (-not ($cfg.Xms -match '^\d+(K|M|G)$')) { throw "Xms must match format like 256M." }
   if ($cfg.ProcessPriority -and -not (Resolve-ProcessPriority -Value $cfg.ProcessPriority)) { throw "ProcessPriority invalid: $($cfg.ProcessPriority)" }
   if ($cfg.CpuAffinityMode -and -not (Test-AffinityMode -Value $cfg.CpuAffinityMode)) { throw "CpuAffinityMode invalid: $($cfg.CpuAffinityMode)" }
+  if ($cfg.JoinAuthMode -and ($cfg.JoinAuthMode -notin @('offline','authenticated'))) { throw "JoinAuthMode must be 'offline' or 'authenticated'." }
   if (-not ($cfg.ReadyPatterns -is [System.Collections.IEnumerable])) { throw "ReadyPatterns must be an array." }
   if (-not ($cfg.ErrorPatterns -is [System.Collections.IEnumerable])) { throw "ErrorPatterns must be an array." }
   if ($cfg.ErrorIgnorePatterns -and -not ($cfg.ErrorIgnorePatterns -is [System.Collections.IEnumerable])) { throw "ErrorIgnorePatterns must be an array." }
@@ -855,7 +862,7 @@ function Adjust-Parallel {
 }
 
 function Start-Instance {
-  param($cfg, $testId, $mods, $port, $runRoot)
+  param($cfg, $testId, $mods, $port, $runRoot, [string]$AuthMode = 'offline')
   $testDir = Join-Path $runRoot ("test-{0:0000}" -f $testId)
   $serverDir = Join-Path $testDir 'server'
   $logDir = Join-Path $testDir 'logs'
@@ -881,7 +888,8 @@ function Start-Instance {
     $aotPath = Join-Path $serverDir 'HytaleServer.aot'
     if (Test-Path $aotPath) { $args += "-XX:AOTCache=HytaleServer.aot" }
   }
-  $args += @('-jar','HytaleServer.jar','--assets',$cfg.AssetsZip,'--auth-mode','offline','--bind',"0.0.0.0:$port",'--disable-sentry')
+  $auth = Normalize-AuthMode -Value $AuthMode -Default 'offline'
+  $args += @('-jar','HytaleServer.jar','--assets',$cfg.AssetsZip,'--auth-mode',$auth,'--bind',"0.0.0.0:$port",'--disable-sentry')
 
   $proc = Start-Process -FilePath 'java' -ArgumentList $args -WorkingDirectory $serverDir -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
   Apply-ProcessTuning -cfg $cfg -proc $proc
@@ -905,8 +913,16 @@ function Join-Args {
   }) -join ' '
 }
 
+function Normalize-AuthMode {
+  param([string]$Value, [string]$Default)
+  if (-not $Value) { return $Default }
+  $v = $Value.ToString().Trim().ToLower()
+  if ($v -in @('offline','authenticated')) { return $v }
+  return $Default
+}
+
 function Start-ScenarioInstance {
-  param($cfg, $testId, $mods, $port, $runRoot)
+  param($cfg, $testId, $mods, $port, $runRoot, [string]$AuthMode = 'offline')
   $testDir = Join-Path $runRoot ("test-{0:0000}" -f $testId)
   $serverDir = Join-Path $testDir 'server'
   $logDir = Join-Path $testDir 'logs'
@@ -930,7 +946,8 @@ function Start-ScenarioInstance {
     $aotPath = Join-Path $serverDir 'HytaleServer.aot'
     if (Test-Path $aotPath) { $args += "-XX:AOTCache=HytaleServer.aot" }
   }
-  $args += @('-jar','HytaleServer.jar','--assets',$cfg.AssetsZip,'--auth-mode','offline','--bind',"0.0.0.0:$port",'--disable-sentry')
+  $auth = Normalize-AuthMode -Value $AuthMode -Default 'offline'
+  $args += @('-jar','HytaleServer.jar','--assets',$cfg.AssetsZip,'--auth-mode',$auth,'--bind',"0.0.0.0:$port",'--disable-sentry')
 
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = 'java'
@@ -1389,6 +1406,302 @@ function Run-BootTests {
   Write-Host "Boot report: $reportPath"
 }
 
+function Expand-JoinCommand {
+  param([string]$Command, [string]$RunId, [int]$TestId, [int]$Port, [string]$TestDir, [string]$LogDir)
+  $cmd = $Command
+  $cmd = $cmd -replace '\{host\}', '127.0.0.1'
+  $cmd = $cmd -replace '\{port\}', "$Port"
+  $cmd = $cmd -replace '\{runId\}', $RunId
+  $cmd = $cmd -replace '\{testId\}', "$TestId"
+  $cmd = $cmd -replace '\{testDir\}', $TestDir
+  $cmd = $cmd -replace '\{logDir\}', $LogDir
+  return $cmd
+}
+
+function Invoke-JoinCommand {
+  param($cfg, [string]$Command, [string]$RunId, [int]$TestId, [string]$TestDir, [int]$Port)
+  if (-not $Command) {
+    return [pscustomobject]@{ Status = 'skip'; Reason = 'join command not configured'; LogDir = '' }
+  }
+  $logDir = Join-Path $TestDir 'join'
+  New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+  $stdout = Join-Path $logDir 'stdout.log'
+  $stderr = Join-Path $logDir 'stderr.log'
+  $expanded = Expand-JoinCommand -Command $Command -RunId $RunId -TestId $TestId -Port $Port -TestDir $TestDir -LogDir $logDir
+  try {
+    $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $expanded -WorkingDirectory $TestDir -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+  } catch {
+    return [pscustomobject]@{ Status = 'fail'; Reason = 'join command failed to start'; LogDir = $logDir }
+  }
+  $finished = $true
+  if ($cfg.JoinTimeoutSeconds -gt 0) {
+    $finished = $proc.WaitForExit($cfg.JoinTimeoutSeconds * 1000)
+  } else {
+    $proc.WaitForExit()
+  }
+  if (-not $finished) {
+    try { Stop-Process -Id $proc.Id -Force } catch {}
+    return [pscustomobject]@{ Status = 'timeout'; Reason = 'join timeout'; LogDir = $logDir }
+  }
+  if ($proc.ExitCode -ne 0) {
+    return [pscustomobject]@{ Status = 'fail'; Reason = "join exit code $($proc.ExitCode)"; LogDir = $logDir }
+  }
+  return [pscustomobject]@{ Status = 'pass'; Reason = 'join ok'; LogDir = $logDir }
+}
+
+function Run-JoinTests {
+  param($cfg, $plan, [string]$RunId, [int]$StartIndex, [int]$Count, [int]$Limit)
+  Ensure-Template -cfg $cfg
+  $runId = if ($RunId) { $RunId } else { (Get-Date).ToString('yyyyMMdd-HHmmss') }
+  $runRoot = Join-Path $cfg.RunsDir $runId
+  if (-not (Test-Path $runRoot)) { New-Item -ItemType Directory -Path $runRoot -Force | Out-Null }
+  $resourcePath = $null
+  if ($cfg.ResourceLogIntervalSec -gt 0) {
+    $resourcePath = Join-Path $cfg.ReportsDir ("resource-$runId.csv")
+  }
+  $script:TraceRunId = $runId
+  $script:TraceLogLevel = $cfg.TraceLogLevel
+  $script:TraceLogPath = Join-Path $cfg.ReportsDir ("trace-$runId.jsonl")
+  $lastThrottleLog = [datetime]::MinValue
+
+  $tests = $plan.Tests
+  $modList = $plan.Mods
+  $overrides = Load-DepOverrides -cfg $cfg
+  $modMaps = Build-ModMaps -mods $modList -overrides $overrides
+  $metaByPath = $modMaps.MetaByPath
+  $modById = $modMaps.ModById
+
+  $start = 0
+  if ($PSBoundParameters.ContainsKey('StartIndex')) { $start = [int]$StartIndex }
+  if ($start -lt 0 -or $start -ge $tests.Count) { throw "StartIndex out of range: $start" }
+
+  $maxCount = $tests.Count
+  if ($PSBoundParameters.ContainsKey('Count')) {
+    $maxCount = [int]$Count
+  } elseif ($PSBoundParameters.ContainsKey('Limit')) {
+    $maxCount = [int]$Limit
+  }
+  if ($maxCount -lt 1) { throw "Count/Limit must be >= 1." }
+  $end = [Math]::Min($tests.Count - 1, $start + $maxCount - 1)
+  Write-Host "Join testing tests $start..$end of $($tests.Count - 1)"
+
+  $queue = New-Object System.Collections.Generic.Queue[object]
+  for ($i = $start; $i -le $end; $i++) {
+    $queue.Enqueue(@{ Id = $i; Indices = $tests[$i] })
+  }
+
+  $results = @()
+  if (-not $cfg.JoinCommand) {
+    for ($i = $start; $i -le $end; $i++) {
+      $results += [pscustomobject]@{
+        RunId = $runId
+        TestId = $i
+        Status = 'skip'
+        DurationSec = 0
+        Pattern = 'join command not configured'
+        LogDir = ''
+        Port = $null
+        StartedAt = (Get-Date).ToString('s')
+        CompletedAt = (Get-Date).ToString('s')
+      }
+    }
+    $reportPath = Join-Path $cfg.ReportsDir "join-$runId.csv"
+    $results | Export-Csv -Path $reportPath -NoTypeInformation
+    Write-Host "Join report: $reportPath"
+    return
+  }
+
+  $running = @()
+  $port = $cfg.PortStart
+  $total = ($end - $start + 1)
+  $lastProgress = -1
+  $lastProgressLog = [datetime]::MinValue
+  $effectiveMaxParallel = $cfg.MaxParallel
+  $lastAdjust = [datetime]::MinValue
+  $monitor = Start-ResourceMonitor -cfg $cfg -Path $resourcePath
+  Write-Trace -Level 'info' -Event 'run_start' -TestId -1 -Data @{
+    StartIndex = $start
+    EndIndex = $end
+    Total = $total
+    MaxParallel = $cfg.MaxParallel
+    BootTimeoutSeconds = $cfg.BootTimeoutSeconds
+    JoinTimeoutSeconds = $cfg.JoinTimeoutSeconds
+    JoinAuthMode = $cfg.JoinAuthMode
+  }
+
+  while ($queue.Count -gt 0 -or $running.Count -gt 0) {
+    $stats = $script:ResourceStats
+    if (-not $stats) { $stats = Get-SystemStats }
+    if ($cfg.AdaptiveThrottleEnabled) {
+      Adjust-Parallel -cfg $cfg -Stats $stats -EffectiveMaxParallel ([ref]$effectiveMaxParallel) -LastAdjust ([ref]$lastAdjust)
+    }
+    if ($effectiveMaxParallel -lt 1) { $effectiveMaxParallel = 1 }
+    while ($running.Count -lt $effectiveMaxParallel -and $queue.Count -gt 0) {
+      if (-not $stats) { $stats = Get-SystemStats }
+      if ($stats -and (Test-Throttle -cfg $cfg -Stats $stats)) {
+        if (((Get-Date) - $lastThrottleLog).TotalSeconds -ge 5) {
+          Write-Host ("Throttle spawn: CPU {0}% Mem {1}% (limits {2}%/{3}%)" -f $stats.CpuPct, $stats.MemPct, $cfg.ThrottleCpuPct, $cfg.ThrottleMemPct)
+          $lastThrottleLog = Get-Date
+        }
+        $delay = if ($cfg.ThrottleCheckIntervalMs -gt 0) { $cfg.ThrottleCheckIntervalMs } else { 250 }
+        Start-Sleep -Milliseconds $delay
+        break
+      }
+      $next = $queue.Dequeue()
+      $mods = @()
+      foreach ($idx in $next.Indices) { $mods += $modList[$idx] }
+      $expanded = Expand-ModSet -mods $mods -metaByPath $metaByPath -modById $modById
+      if ($expanded.Missing.Count -gt 0) {
+        $results += [pscustomobject]@{
+          RunId = $runId
+          TestId = $next.Id
+          Status = 'skip'
+          DurationSec = 0
+          Pattern = "missing dependency: $($expanded.Missing -join ', ')"
+          LogDir = ''
+          Port = $null
+          StartedAt = (Get-Date).ToString('s')
+          CompletedAt = (Get-Date).ToString('s')
+        }
+        Write-Trace -Level 'warn' -Event 'test_skip' -TestId $next.Id -Data @{
+          Reason = 'missing_dependency'
+          Missing = $expanded.Missing
+        }
+        continue
+      }
+      $missingFiles = @()
+      foreach ($m in $expanded.Mods) {
+        if (-not (Test-Path $m.Path)) { $missingFiles += $m.Name }
+      }
+      if ($missingFiles.Count -gt 0) {
+        $results += [pscustomobject]@{
+          RunId = $runId
+          TestId = $next.Id
+          Status = 'skip'
+          DurationSec = 0
+          Pattern = "missing mod files: $($missingFiles -join ', ')"
+          LogDir = ''
+          Port = $null
+          StartedAt = (Get-Date).ToString('s')
+          CompletedAt = (Get-Date).ToString('s')
+        }
+        Write-Trace -Level 'warn' -Event 'test_skip' -TestId $next.Id -Data @{
+          Reason = 'missing_mod_files'
+          Missing = $missingFiles
+        }
+        continue
+      }
+      $inst = Start-Instance -cfg $cfg -testId $next.Id -mods $expanded.Mods -port $port -runRoot $runRoot -AuthMode $cfg.JoinAuthMode
+      $modNames = if ((Resolve-TraceLevel -Value $script:TraceLogLevel) -ge 3) { @($expanded.Mods | ForEach-Object { $_.Name }) } else { @() }
+      Write-Trace -Level 'info' -Event 'instance_start' -TestId $next.Id -Data @{
+        Port = $port
+        ModCount = $expanded.Mods.Count
+        Mods = $modNames
+        JoinAuthMode = $cfg.JoinAuthMode
+      }
+      $running += $inst
+      $port++
+      if ($port -gt $cfg.PortEnd) { $port = $cfg.PortStart }
+    }
+
+    $stillRunning = @()
+    foreach ($inst in $running) {
+      $elapsed = (Get-Date) - $inst.StartTime
+      $status = Get-LogStatus -cfg $cfg -inst $inst
+      if ($status.Status -eq 'ready') {
+        $join = Invoke-JoinCommand -cfg $cfg -Command $cfg.JoinCommand -RunId $runId -TestId $inst.TestId -TestDir $inst.TestDir -Port $inst.Port
+        try { Stop-Process -Id $inst.Process.Id -Force } catch {}
+        $elapsed = (Get-Date) - $inst.StartTime
+        $finalStatus = $join.Status
+        $pattern = if ($join.Status -eq 'pass') { $status.Pattern } else { $join.Reason }
+        $results += [pscustomobject]@{
+          RunId = $runId
+          TestId = $inst.TestId
+          Status = $finalStatus
+          DurationSec = [int]$elapsed.TotalSeconds
+          Pattern = $pattern
+          LogDir = $inst.TestDir
+          Port = $inst.Port
+          StartedAt = $inst.StartTime.ToString('s')
+          CompletedAt = (Get-Date).ToString('s')
+        }
+        Write-Trace -Level 'info' -Event 'test_result' -TestId $inst.TestId -Data @{
+          Status = $finalStatus
+          DurationSec = [int]$elapsed.TotalSeconds
+          Pattern = $pattern
+          Port = $inst.Port
+          JoinLogDir = $join.LogDir
+        }
+      } elseif ($status.Status -eq 'error') {
+        try { Stop-Process -Id $inst.Process.Id -Force } catch {}
+        $results += [pscustomobject]@{
+          RunId = $runId
+          TestId = $inst.TestId
+          Status = 'fail'
+          DurationSec = [int]$elapsed.TotalSeconds
+          Pattern = $status.Pattern
+          LogDir = $inst.TestDir
+          Port = $inst.Port
+          StartedAt = $inst.StartTime.ToString('s')
+          CompletedAt = (Get-Date).ToString('s')
+        }
+        Write-Trace -Level 'warn' -Event 'test_result' -TestId $inst.TestId -Data @{
+          Status = 'fail'
+          DurationSec = [int]$elapsed.TotalSeconds
+          Pattern = $status.Pattern
+          Port = $inst.Port
+        }
+      } elseif ($elapsed.TotalSeconds -ge $cfg.BootTimeoutSeconds) {
+        try { Stop-Process -Id $inst.Process.Id -Force } catch {}
+        $results += [pscustomobject]@{
+          RunId = $runId
+          TestId = $inst.TestId
+          Status = 'timeout'
+          DurationSec = [int]$elapsed.TotalSeconds
+          Pattern = ''
+          LogDir = $inst.TestDir
+          Port = $inst.Port
+          StartedAt = $inst.StartTime.ToString('s')
+          CompletedAt = (Get-Date).ToString('s')
+        }
+        Write-Trace -Level 'warn' -Event 'test_result' -TestId $inst.TestId -Data @{
+          Status = 'timeout'
+          DurationSec = [int]$elapsed.TotalSeconds
+          Port = $inst.Port
+        }
+      } else {
+        $stillRunning += $inst
+      }
+    }
+
+    $running = $stillRunning
+    $completed = $results.Count
+    if ($completed -ne $lastProgress -and ((((Get-Date) - $lastProgressLog).TotalSeconds -ge 5) -or $completed -eq $total)) {
+      Write-Host "Progress: $completed/$total complete (parallel=$effectiveMaxParallel)"
+      $lastProgress = $completed
+      $lastProgressLog = Get-Date
+    }
+    Start-Sleep -Milliseconds 750
+  }
+  Stop-ResourceMonitor -timer $monitor
+  if ($resourcePath -and -not (Test-Path $resourcePath)) {
+    $stats = if ($script:ResourceStats) { $script:ResourceStats } else { Get-SystemStats }
+    Write-ResourceSample -Path $resourcePath -Stats $stats
+  }
+  Write-Trace -Level 'info' -Event 'run_end' -TestId -1 -Data @{
+    Total = $total
+    Results = $results.Count
+  }
+
+  $reportPath = Join-Path $cfg.ReportsDir "join-$runId.csv"
+  if (Test-Path $reportPath) {
+    $results | Export-Csv -Path $reportPath -NoTypeInformation -Append
+  } else {
+    $results | Export-Csv -Path $reportPath -NoTypeInformation
+  }
+  Write-Host "Join report: $reportPath"
+}
+
 function Invoke-SingleBoot {
   param($cfg, $mods, [string]$runRoot, [int]$testId, [int]$port, $metaByPath, $modById)
   if ($metaByPath -and $modById) {
@@ -1567,9 +1880,9 @@ function Run-Bisect {
   param($cfg, [string]$RunId, [int]$TestId, [string]$Status)
   Ensure-Dirs -cfg $cfg
   $reportCsv = if ($RunId) { Join-Path $cfg.ReportsDir "boot-$RunId.csv" } else { Get-LatestBootReport -cfg $cfg }
-  if (-not (Test-Path $reportCsv)) { throw "Boot report not found: $reportCsv" }
+  if (-not (Test-Path $reportCsv)) { throw "Report not found: $reportCsv" }
   $rows = Import-Csv -Path $reportCsv
-  if (-not $rows -or $rows.Count -eq 0) { throw "Boot report is empty: $reportCsv" }
+  if (-not $rows -or $rows.Count -eq 0) { throw "Report is empty: $reportCsv" }
 
   $row = $null
   if ($TestId -ge 0) {
@@ -1919,15 +2232,15 @@ function Run-Scenario {
 }
 
 function Get-RunIdFromReportPath {
-  param([string]$Path)
-  if ($Path -match 'boot-(.+)\.csv') { return $Matches[1] }
+  param([string]$Path, [string]$Prefix = 'boot')
+  if ($Path -match "$Prefix-(.+)\.csv") { return $Matches[1] }
   return ''
 }
 
 function Get-LatestBootReport {
-  param($cfg)
-  $files = Get-ChildItem -Path $cfg.ReportsDir -Filter 'boot-*.csv' | Sort-Object LastWriteTime -Descending
-  if (-not $files -or $files.Count -eq 0) { throw "No boot-*.csv reports found in $($cfg.ReportsDir)" }
+  param($cfg, [string]$Prefix = 'boot')
+  $files = Get-ChildItem -Path $cfg.ReportsDir -Filter "$Prefix-*.csv" | Sort-Object LastWriteTime -Descending
+  if (-not $files -or $files.Count -eq 0) { throw "No $Prefix-*.csv reports found in $($cfg.ReportsDir)" }
   return $files[0].FullName
 }
 
@@ -1968,13 +2281,14 @@ function Write-JUnit {
 }
 
 function Write-Report {
-  param($cfg, [string]$RunId, [string]$Out, [switch]$Json, [switch]$Csv, [switch]$Junit)
-  $reportCsv = if ($RunId) { Join-Path $cfg.ReportsDir "boot-$RunId.csv" } else { Get-LatestBootReport -cfg $cfg }
+  param($cfg, [string]$RunId, [string]$Out, [switch]$Json, [switch]$Csv, [switch]$Junit, [string]$Lane)
+  $prefix = if ($Lane) { $Lane } else { 'boot' }
+  $reportCsv = if ($RunId) { Join-Path $cfg.ReportsDir "$prefix-$RunId.csv" } else { Get-LatestBootReport -cfg $cfg -Prefix $prefix }
   if (-not (Test-Path $reportCsv)) { throw "Boot report not found: $reportCsv" }
   $rows = Import-Csv -Path $reportCsv
   if (-not $rows -or $rows.Count -eq 0) { throw "Boot report is empty: $reportCsv" }
 
-  $resolvedRunId = if ($RunId) { $RunId } else { Get-RunIdFromReportPath -Path $reportCsv }
+  $resolvedRunId = if ($RunId) { $RunId } else { Get-RunIdFromReportPath -Path $reportCsv -Prefix $prefix }
   if (-not $resolvedRunId) { $resolvedRunId = (Get-Date).ToString('yyyyMMdd-HHmmss') }
   $outDir = if ($Out) { $Out } else { $cfg.ReportsDir }
   if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
@@ -2102,7 +2416,7 @@ function Write-Report {
 switch ($Command) {
   'help' {
     Write-Host "Hylab" 
-    Write-Host "Commands: scan | plan | boot | report | proofcheck | bisect | repro | scenario | deps | tune-memory" 
+    Write-Host "Commands: scan | plan | boot | join | report | proofcheck | bisect | repro | scenario | deps | tune-memory" 
   }
   'scan' {
     $cfg = Load-Config -Path $ConfigPath
@@ -2131,10 +2445,20 @@ switch ($Command) {
     $plan = Get-Content -Raw -Path $planPath | ConvertFrom-Json
     Run-BootTests -cfg $cfg -plan $plan -RunId $RunId -StartIndex $StartIndex -Count $Count -Limit $Limit
   }
+  'join' {
+    $cfg = Load-Config -Path $ConfigPath
+    Ensure-Dirs -cfg $cfg
+    $planPath = Join-Path $cfg.ReportsDir 'plan.json'
+    if (-not (Test-Path $planPath)) {
+      throw "plan.json not found. Run: .\modlab.ps1 plan"
+    }
+    $plan = Get-Content -Raw -Path $planPath | ConvertFrom-Json
+    Run-JoinTests -cfg $cfg -plan $plan -RunId $RunId -StartIndex $StartIndex -Count $Count -Limit $Limit
+  }
   'report' {
     $cfg = Load-Config -Path $ConfigPath
     Ensure-Dirs -cfg $cfg
-    Write-Report -cfg $cfg -RunId $RunId -Out $Out -Json:$Json -Csv:$Csv -Junit:$Junit
+    Write-Report -cfg $cfg -RunId $RunId -Out $Out -Json:$Json -Csv:$Csv -Junit:$Junit -Lane $Lane
   }
   'proofcheck' {
     $cfg = Load-Config -Path $ConfigPath
