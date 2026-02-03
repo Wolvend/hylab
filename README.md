@@ -1,6 +1,6 @@
 # Hylab
 
-Automated Hytale server mod testing harness.
+Hylab is a deterministic, artifact-first testing harness for Hytale server mods. It scans mod inventories, plans coverage, boots isolated server runs, and produces evidence-rich reports so compatibility can be measured, reproduced, and improved with confidence across platforms.
 
 ## Goals
 - Fast boot tests (offline auth)
@@ -10,6 +10,7 @@ Automated Hytale server mod testing harness.
 - CSV + summary reports
 
 ## Layout
+```text
 modlab/
   bin/
   config/
@@ -17,6 +18,7 @@ modlab/
   repros/
   reports/
   logs/
+```
 
 ## Requirements
 - Java 25 (recommended: Adoptium). `java -version` should report 25.x.
