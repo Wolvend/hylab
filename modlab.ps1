@@ -44,6 +44,7 @@ $script:CpuSamples = $null
 $script:MemSamples = $null
 $script:SampleWindow = 0
 $script:SpikeUntil = [datetime]::MinValue
+$script:BootTimeSamples = $null
 
 function Apply-EnvOverrides {
   param($cfg)
@@ -76,6 +77,17 @@ function Apply-EnvOverrides {
     JoinCommand = $env:HYLAB_JOIN_COMMAND
     JoinTimeoutSeconds = $env:HYLAB_JOIN_TIMEOUT_SECONDS
     JoinAuthMode = $env:HYLAB_JOIN_AUTH_MODE
+    ThinCloneEnabled = $env:HYLAB_THIN_CLONE
+    ThinCloneWritableDirs = $env:HYLAB_THIN_CLONE_WRITABLE_DIRS
+    ThinCloneWritableFiles = $env:HYLAB_THIN_CLONE_WRITABLE_FILES
+    RunRetentionCount = $env:HYLAB_RUN_RETENTION_COUNT
+    RunRetentionDays = $env:HYLAB_RUN_RETENTION_DAYS
+    StageAheadCount = $env:HYLAB_STAGE_AHEAD_COUNT
+    LogMaxBytes = $env:HYLAB_LOG_MAX_BYTES
+    BootTimeAdaptiveEnabled = $env:HYLAB_BOOT_TIME_ADAPTIVE
+    BootTimeSampleWindow = $env:HYLAB_BOOT_TIME_WINDOW
+    BootTimeHighSec = $env:HYLAB_BOOT_TIME_HIGH
+    BootTimeLowSec = $env:HYLAB_BOOT_TIME_LOW
     DepOverridesPath = $env:HYLAB_DEP_OVERRIDES
     ExcludesPath = $env:HYLAB_EXCLUDES
     ResourceSampleIntervalSec = $env:HYLAB_RESOURCE_SAMPLE_INTERVAL_SEC
@@ -109,15 +121,22 @@ function Apply-EnvOverrides {
   foreach ($k in $map.Keys) {
     $v = $map[$k]
     if ($null -ne $v -and ($v.ToString().Trim().Length -gt 0)) {
-      if ($k -in @('PortStart','PortEnd','MaxParallel','BootTimeoutSeconds','JoinTimeoutSeconds','PairwiseGroupSize','PairwiseTriesPerGroup','PairwiseSeed','ThrottleCpuPct','ThrottleMemPct','ThrottleCheckIntervalMs','ResourceLogIntervalSec','ResourceSampleIntervalSec','AdaptiveMinParallel','AdaptiveMaxParallel','AdaptiveSampleWindow','AdaptiveSpikePct','AdaptiveSpikeHoldSec','AdaptiveCpuHighPct','AdaptiveCpuLowPct','AdaptiveMemHighPct','AdaptiveMemLowPct','AdaptiveStepUp','AdaptiveStepDown','AdaptiveCooldownSec')) {
+      if ($k -in @('PortStart','PortEnd','MaxParallel','BootTimeoutSeconds','JoinTimeoutSeconds','PairwiseGroupSize','PairwiseTriesPerGroup','PairwiseSeed','ThrottleCpuPct','ThrottleMemPct','ThrottleCheckIntervalMs','ResourceLogIntervalSec','ResourceSampleIntervalSec','AdaptiveMinParallel','AdaptiveMaxParallel','AdaptiveSampleWindow','AdaptiveSpikePct','AdaptiveSpikeHoldSec','AdaptiveCpuHighPct','AdaptiveCpuLowPct','AdaptiveMemHighPct','AdaptiveMemLowPct','AdaptiveStepUp','AdaptiveStepDown','AdaptiveCooldownSec','RunRetentionCount','RunRetentionDays','StageAheadCount','LogMaxBytes','BootTimeSampleWindow','BootTimeHighSec','BootTimeLowSec')) {
         $cfg.$k = [int]$v
       } elseif ($k -eq 'ErrorIgnorePatterns') {
+        $parts = $v.ToString().Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        $cfg.$k = $parts
+      } elseif ($k -in @('ThinCloneWritableDirs','ThinCloneWritableFiles')) {
         $parts = $v.ToString().Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         $cfg.$k = $parts
       } elseif ($k -eq 'AdaptiveThrottleEnabled') {
         $cfg.$k = Convert-ToBool -Value $v -Default $cfg.AdaptiveThrottleEnabled
       } elseif ($k -eq 'UseAOTCache') {
         $cfg.$k = Convert-ToBool -Value $v -Default $cfg.UseAOTCache
+      } elseif ($k -eq 'ThinCloneEnabled') {
+        $cfg.$k = Convert-ToBool -Value $v -Default $cfg.ThinCloneEnabled
+      } elseif ($k -eq 'BootTimeAdaptiveEnabled') {
+        $cfg.$k = Convert-ToBool -Value $v -Default $cfg.BootTimeAdaptiveEnabled
       } else {
         $cfg.$k = $v
       }
@@ -163,6 +182,17 @@ function Load-Config {
   if ($null -eq $cfg.AdaptiveCooldownSec) { $cfg.AdaptiveCooldownSec = 10 }
   if ($null -eq $cfg.JoinTimeoutSeconds) { $cfg.JoinTimeoutSeconds = 60 }
   if (-not $cfg.JoinAuthMode) { $cfg.JoinAuthMode = 'authenticated' }
+  if ($null -eq $cfg.ThinCloneEnabled) { $cfg.ThinCloneEnabled = $false }
+  if (-not $cfg.ThinCloneWritableDirs) { $cfg.ThinCloneWritableDirs = @('mods','logs','universe','.cache') }
+  if (-not $cfg.ThinCloneWritableFiles) { $cfg.ThinCloneWritableFiles = @('config.json','permissions.json','whitelist.json','bans.json') }
+  if ($null -eq $cfg.RunRetentionCount) { $cfg.RunRetentionCount = 0 }
+  if ($null -eq $cfg.RunRetentionDays) { $cfg.RunRetentionDays = 0 }
+  if ($null -eq $cfg.StageAheadCount) { $cfg.StageAheadCount = $cfg.MaxParallel }
+  if ($null -eq $cfg.LogMaxBytes) { $cfg.LogMaxBytes = 10485760 }
+  if ($null -eq $cfg.BootTimeAdaptiveEnabled) { $cfg.BootTimeAdaptiveEnabled = $true }
+  if ($null -eq $cfg.BootTimeSampleWindow) { $cfg.BootTimeSampleWindow = 6 }
+  if ($null -eq $cfg.BootTimeHighSec) { $cfg.BootTimeHighSec = [int][math]::Max(30, [math]::Round($cfg.BootTimeoutSeconds * 0.6)) }
+  if ($null -eq $cfg.BootTimeLowSec) { $cfg.BootTimeLowSec = [int][math]::Max(10, [math]::Round($cfg.BootTimeoutSeconds * 0.3)) }
   Apply-EnvOverrides -cfg $cfg
   if ($Parallel) { $cfg.MaxParallel = $Parallel }
   if ($Xmx) { $cfg.Xmx = $Xmx }
@@ -186,7 +216,7 @@ function Validate-Config {
     'ReprosDir','LogsDir','CacheDir','UseAOTCache','PortStart','PortEnd','MaxParallel','Xmx','Xms',
     'DepOverridesPath','ExcludesPath','ErrorIgnorePatterns','ResourceSampleIntervalSec','TraceLogLevel','DebugTailLines','ThrottleCpuPct','ThrottleMemPct','ThrottleCheckIntervalMs','ResourceLogIntervalSec','ProcessPriority','CpuAffinityMode',
     'AdaptiveThrottleEnabled','AdaptiveMinParallel','AdaptiveMaxParallel','AdaptiveSampleWindow','AdaptiveSpikePct','AdaptiveSpikeHoldSec','AdaptiveCpuHighPct','AdaptiveCpuLowPct','AdaptiveMemHighPct','AdaptiveMemLowPct','AdaptiveStepUp','AdaptiveStepDown','AdaptiveCooldownSec',
-    'BootTimeoutSeconds','JoinCommand','JoinTimeoutSeconds','JoinAuthMode','ReadyPatterns','ErrorPatterns','PairwiseGroupSize',
+    'BootTimeoutSeconds','JoinCommand','JoinTimeoutSeconds','JoinAuthMode','ThinCloneEnabled','ThinCloneWritableDirs','ThinCloneWritableFiles','RunRetentionCount','RunRetentionDays','StageAheadCount','LogMaxBytes','BootTimeAdaptiveEnabled','BootTimeSampleWindow','BootTimeHighSec','BootTimeLowSec','ReadyPatterns','ErrorPatterns','PairwiseGroupSize',
     'PairwiseTriesPerGroup','PairwiseSeed'
   )
   $unknown = $cfg.PSObject.Properties.Name | Where-Object { $allowed -notcontains $_ }
@@ -238,6 +268,15 @@ function Validate-Config {
   if ($cfg.ProcessPriority -and -not (Resolve-ProcessPriority -Value $cfg.ProcessPriority)) { throw "ProcessPriority invalid: $($cfg.ProcessPriority)" }
   if ($cfg.CpuAffinityMode -and -not (Test-AffinityMode -Value $cfg.CpuAffinityMode)) { throw "CpuAffinityMode invalid: $($cfg.CpuAffinityMode)" }
   if ($cfg.JoinAuthMode -and ($cfg.JoinAuthMode -notin @('offline','authenticated'))) { throw "JoinAuthMode must be 'offline' or 'authenticated'." }
+  if ($cfg.RunRetentionCount -lt 0) { throw "RunRetentionCount must be >= 0." }
+  if ($cfg.RunRetentionDays -lt 0) { throw "RunRetentionDays must be >= 0." }
+  if ($cfg.ThinCloneWritableDirs -and -not ($cfg.ThinCloneWritableDirs -is [System.Collections.IEnumerable])) { throw "ThinCloneWritableDirs must be an array." }
+  if ($cfg.ThinCloneWritableFiles -and -not ($cfg.ThinCloneWritableFiles -is [System.Collections.IEnumerable])) { throw "ThinCloneWritableFiles must be an array." }
+  if ($cfg.StageAheadCount -lt 1) { throw "StageAheadCount must be >= 1." }
+  if ($cfg.LogMaxBytes -lt 0) { throw "LogMaxBytes must be >= 0." }
+  if ($cfg.BootTimeSampleWindow -lt 1) { throw "BootTimeSampleWindow must be >= 1." }
+  if ($cfg.BootTimeHighSec -lt 0) { throw "BootTimeHighSec must be >= 0." }
+  if ($cfg.BootTimeLowSec -lt 0) { throw "BootTimeLowSec must be >= 0." }
   if (-not ($cfg.ReadyPatterns -is [System.Collections.IEnumerable])) { throw "ReadyPatterns must be an array." }
   if (-not ($cfg.ErrorPatterns -is [System.Collections.IEnumerable])) { throw "ErrorPatterns must be an array." }
   if ($cfg.ErrorIgnorePatterns -and -not ($cfg.ErrorIgnorePatterns -is [System.Collections.IEnumerable])) { throw "ErrorIgnorePatterns must be an array." }
@@ -424,6 +463,201 @@ function Ensure-Dirs {
   $dirs = @($cfg.WorkDir, $cfg.TemplateDir, $cfg.RunsDir, $cfg.ReportsDir, $cfg.ReprosDir, $cfg.LogsDir, $cfg.CacheDir)
   foreach ($d in $dirs) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+  }
+}
+
+function Apply-RunRetention {
+  param($cfg)
+  if ($cfg.RunRetentionCount -le 0 -and $cfg.RunRetentionDays -le 0) { return }
+  if (-not (Test-Path $cfg.RunsDir)) { return }
+  $dirs = Get-ChildItem -Path $cfg.RunsDir -Directory | Sort-Object LastWriteTime -Descending
+  if ($cfg.RunRetentionDays -gt 0) {
+    $cutoff = (Get-Date).AddDays(-$cfg.RunRetentionDays)
+    foreach ($d in $dirs | Where-Object { $_.LastWriteTime -lt $cutoff }) {
+      try { Remove-Item -Recurse -Force -Path $d.FullName } catch {}
+    }
+    $dirs = Get-ChildItem -Path $cfg.RunsDir -Directory | Sort-Object LastWriteTime -Descending
+  }
+  if ($cfg.RunRetentionCount -gt 0) {
+    $keep = $dirs | Select-Object -First $cfg.RunRetentionCount
+    $keepSet = @{}
+    foreach ($k in $keep) { $keepSet[$k.FullName] = $true }
+    foreach ($d in $dirs) {
+      if (-not $keepSet.ContainsKey($d.FullName)) {
+        try { Remove-Item -Recurse -Force -Path $d.FullName } catch {}
+      }
+    }
+  }
+}
+
+function Test-SameVolume {
+  param([string]$PathA, [string]$PathB)
+  $rootA = [System.IO.Path]::GetPathRoot($PathA).TrimEnd('\').ToUpper()
+  $rootB = [System.IO.Path]::GetPathRoot($PathB).TrimEnd('\').ToUpper()
+  return ($rootA -eq $rootB)
+}
+
+function New-HardlinkSafe {
+  param([string]$Path, [string]$Target)
+  try {
+    New-Item -ItemType HardLink -Path $Path -Target $Target -Force | Out-Null
+    return $true
+  } catch {
+    try {
+      $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "mklink /H `"$Path`" `"$Target`"" -Wait -NoNewWindow -PassThru
+      return ($p.ExitCode -eq 0)
+    } catch { return $false }
+  }
+}
+
+function New-JunctionSafe {
+  param([string]$Path, [string]$Target)
+  try {
+    New-Item -ItemType Junction -Path $Path -Target $Target -Force | Out-Null
+    return $true
+  } catch {
+    try {
+      $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "mklink /J `"$Path`" `"$Target`"" -Wait -NoNewWindow -PassThru
+      return ($p.ExitCode -eq 0)
+    } catch { return $false }
+  }
+}
+
+function Copy-Template {
+  param($cfg, [string]$ServerDir)
+  if (-not $cfg.ThinCloneEnabled) {
+    Copy-Item -Path (Join-Path $cfg.TemplateDir '*') -Destination $ServerDir -Recurse -Force
+    return
+  }
+  if (-not (Test-SameVolume -PathA $cfg.TemplateDir -PathB $ServerDir)) {
+    Write-Host "ThinClone disabled: template and runs are on different volumes."
+    Copy-Item -Path (Join-Path $cfg.TemplateDir '*') -Destination $ServerDir -Recurse -Force
+    return
+  }
+  $writableDirs = $cfg.ThinCloneWritableDirs
+  $writableFiles = $cfg.ThinCloneWritableFiles
+  foreach ($item in (Get-ChildItem -Path $cfg.TemplateDir -Force)) {
+    $dest = Join-Path $ServerDir $item.Name
+    if ($item.PSIsContainer) {
+      if ($writableDirs -contains $item.Name) {
+        if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | Out-Null }
+      } else {
+        if (-not (New-JunctionSafe -Path $dest -Target $item.FullName)) {
+          Copy-Item -Path $item.FullName -Destination $dest -Recurse -Force
+        }
+      }
+    } else {
+      if ($writableFiles -contains $item.Name) {
+        Copy-Item -Path $item.FullName -Destination $dest -Force
+      } else {
+        if (-not (New-HardlinkSafe -Path $dest -Target $item.FullName)) {
+          Copy-Item -Path $item.FullName -Destination $dest -Force
+        }
+      }
+    }
+  }
+  foreach ($dirName in $writableDirs) {
+    $p = Join-Path $ServerDir $dirName
+    if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
+  }
+}
+
+function Stage-TestInstance {
+  param($cfg, $testId, $mods, [string]$runRoot, $metaByPath, $modById)
+  if ($metaByPath -and $modById) {
+    $expanded = Expand-ModSet -mods $mods -metaByPath $metaByPath -modById $modById
+    if ($expanded.Missing.Count -gt 0) {
+      return [pscustomobject]@{
+        SkipResult = [pscustomobject]@{
+          TestId = $testId
+          Status = 'skip'
+          DurationSec = 0
+          Pattern = "missing dependency: $($expanded.Missing -join ', ')"
+          LogDir = ''
+          Port = $null
+          StartedAt = (Get-Date).ToString('s')
+          CompletedAt = (Get-Date).ToString('s')
+        }
+        Stage = $null
+      }
+    }
+    $missingFiles = @()
+    foreach ($m in $expanded.Mods) {
+      if (-not (Test-Path $m.Path)) { $missingFiles += $m.Name }
+    }
+    if ($missingFiles.Count -gt 0) {
+      return [pscustomobject]@{
+        SkipResult = [pscustomobject]@{
+          TestId = $testId
+          Status = 'skip'
+          DurationSec = 0
+          Pattern = "missing mod files: $($missingFiles -join ', ')"
+          LogDir = ''
+          Port = $null
+          StartedAt = (Get-Date).ToString('s')
+          CompletedAt = (Get-Date).ToString('s')
+        }
+        Stage = $null
+      }
+    }
+    $mods = $expanded.Mods
+  }
+
+  $testDir = Join-Path $runRoot ("test-{0:0000}" -f $testId)
+  if (Test-Path $testDir) { Remove-Item -Recurse -Force -Path $testDir }
+  $serverDir = Join-Path $testDir 'server'
+  $logDir = Join-Path $testDir 'logs'
+  New-Item -ItemType Directory -Path $serverDir -Force | Out-Null
+  New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+  Copy-Template -cfg $cfg -ServerDir $serverDir
+
+  $modsDir = Join-Path $serverDir 'mods'
+  if (-not (Test-Path $modsDir)) { New-Item -ItemType Directory -Path $modsDir -Force | Out-Null }
+  foreach ($m in $mods) {
+    if (Test-Path $m.Path) {
+      Copy-Item -Path $m.Path -Destination $modsDir -Force
+    }
+  }
+
+  return [pscustomobject]@{
+    SkipResult = $null
+    Stage = [pscustomobject]@{
+      TestId = $testId
+      TestDir = $testDir
+      ServerDir = $serverDir
+      LogDir = $logDir
+      Mods = $mods
+    }
+  }
+}
+
+function Start-StagedInstance {
+  param($cfg, $stage, [int]$port, [string]$AuthMode = 'offline')
+  $stdout = Join-Path $stage.LogDir 'stdout.log'
+  $stderr = Join-Path $stage.LogDir 'stderr.log'
+
+  $args = @()
+  if ($cfg.Xms) { $args += "-Xms$($cfg.Xms)" }
+  if ($cfg.Xmx) { $args += "-Xmx$($cfg.Xmx)" }
+  if ($cfg.UseAOTCache) {
+    $aotPath = Join-Path $stage.ServerDir 'HytaleServer.aot'
+    if (Test-Path $aotPath) { $args += "-XX:AOTCache=HytaleServer.aot" }
+  }
+  $auth = Normalize-AuthMode -Value $AuthMode -Default 'offline'
+  $args += @('-jar','HytaleServer.jar','--assets',$cfg.AssetsZip,'--auth-mode',$auth,'--bind',"0.0.0.0:$port",'--disable-sentry')
+
+  $proc = Start-Process -FilePath 'java' -ArgumentList $args -WorkingDirectory $stage.ServerDir -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
+  Apply-ProcessTuning -cfg $cfg -proc $proc
+
+  return [pscustomobject]@{
+    TestId = $stage.TestId
+    TestDir = $stage.TestDir
+    Mods = $stage.Mods
+    Port = $port
+    StartTime = Get-Date
+    Process = $proc
+    Stdout = $stdout
+    Stderr = $stderr
   }
 }
 
@@ -655,6 +889,31 @@ function Write-Trace {
   Add-Content -Path $script:TraceLogPath -Value $json -Encoding Ascii
 }
 
+function Trim-LogFile {
+  param([string]$Path, [int]$MaxBytes)
+  if ($MaxBytes -le 0) { return }
+  if (-not (Test-Path $Path)) { return }
+  $info = Get-Item -LiteralPath $Path
+  if ($info.Length -le $MaxBytes) { return }
+  $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+  try {
+    $fs.Seek(-$MaxBytes, [System.IO.SeekOrigin]::End) | Out-Null
+    $buffer = New-Object byte[] $MaxBytes
+    $read = $fs.Read($buffer, 0, $MaxBytes)
+    $fs.SetLength(0)
+    $fs.Seek(0, [System.IO.SeekOrigin]::Begin) | Out-Null
+    $fs.Write($buffer, 0, $read)
+  } finally {
+    $fs.Close()
+  }
+}
+
+function Trim-InstanceLogs {
+  param($cfg, $inst)
+  Trim-LogFile -Path $inst.Stdout -MaxBytes $cfg.LogMaxBytes
+  Trim-LogFile -Path $inst.Stderr -MaxBytes $cfg.LogMaxBytes
+}
+
 function Get-LogTail {
   param([string]$Path, [int]$Lines)
   if ($Lines -le 0) { return '' }
@@ -759,6 +1018,21 @@ function Write-ResourceSample {
   Add-Content -Path $Path -Value $line -Encoding Ascii
 }
 
+function Add-BootTimeSample {
+  param($cfg, [int]$Seconds)
+  if (-not $cfg.BootTimeAdaptiveEnabled) { return }
+  if ($cfg.BootTimeSampleWindow -lt 1) { return }
+  if (-not $script:BootTimeSamples) { $script:BootTimeSamples = New-Object System.Collections.Generic.Queue[int] }
+  $script:BootTimeSamples.Enqueue([int]$Seconds)
+  while ($script:BootTimeSamples.Count -gt $cfg.BootTimeSampleWindow) { $null = $script:BootTimeSamples.Dequeue() }
+}
+
+function Get-BootTimeAverage {
+  if (-not $script:BootTimeSamples -or $script:BootTimeSamples.Count -eq 0) { return $null }
+  $avg = ($script:BootTimeSamples.ToArray() | Measure-Object -Average).Average
+  return [math]::Round($avg, 2)
+}
+
 function Start-ResourceMonitor {
   param($cfg, [string]$Path)
   if ($cfg.ResourceSampleIntervalSec -le 0) { return $null }
@@ -858,6 +1132,19 @@ function Adjust-Parallel {
   } elseif ($tooLow) {
     $EffectiveMaxParallel.Value = [math]::Min($cfg.AdaptiveMaxParallel, $EffectiveMaxParallel.Value + $cfg.AdaptiveStepUp)
     $LastAdjust.Value = $now
+  } else {
+    if ($cfg.BootTimeAdaptiveEnabled) {
+      $avgBoot = Get-BootTimeAverage
+      if ($null -ne $avgBoot) {
+        if ($avgBoot -ge $cfg.BootTimeHighSec) {
+          $EffectiveMaxParallel.Value = [math]::Max($cfg.AdaptiveMinParallel, $EffectiveMaxParallel.Value - $cfg.AdaptiveStepDown)
+          $LastAdjust.Value = $now
+        } elseif ($avgBoot -le $cfg.BootTimeLowSec) {
+          $EffectiveMaxParallel.Value = [math]::Min($cfg.AdaptiveMaxParallel, $EffectiveMaxParallel.Value + $cfg.AdaptiveStepUp)
+          $LastAdjust.Value = $now
+        }
+      }
+    }
   }
 }
 
@@ -868,7 +1155,7 @@ function Start-Instance {
   $logDir = Join-Path $testDir 'logs'
   New-Item -ItemType Directory -Path $serverDir -Force | Out-Null
   New-Item -ItemType Directory -Path $logDir -Force | Out-Null
-  Copy-Item -Path (Join-Path $cfg.TemplateDir '*') -Destination $serverDir -Recurse -Force
+  Copy-Template -cfg $cfg -ServerDir $serverDir
 
   $modsDir = Join-Path $serverDir 'mods'
   if (-not (Test-Path $modsDir)) { New-Item -ItemType Directory -Path $modsDir -Force | Out-Null }
@@ -928,7 +1215,7 @@ function Start-ScenarioInstance {
   $logDir = Join-Path $testDir 'logs'
   New-Item -ItemType Directory -Path $serverDir -Force | Out-Null
   New-Item -ItemType Directory -Path $logDir -Force | Out-Null
-  Copy-Item -Path (Join-Path $cfg.TemplateDir '*') -Destination $serverDir -Recurse -Force
+  Copy-Template -cfg $cfg -ServerDir $serverDir
 
   $modsDir = Join-Path $serverDir 'mods'
   if (-not (Test-Path $modsDir)) { New-Item -ItemType Directory -Path $modsDir -Force | Out-Null }
@@ -1170,6 +1457,7 @@ function Run-DepScan {
 function Run-BootTests {
   param($cfg, $plan, [string]$RunId, [int]$StartIndex, [int]$Count, [int]$Limit)
   Ensure-Template -cfg $cfg
+  Apply-RunRetention -cfg $cfg
   $runId = if ($RunId) { $RunId } else { (Get-Date).ToString('yyyyMMdd-HHmmss') }
   $runRoot = Join-Path $cfg.RunsDir $runId
   if (-not (Test-Path $runRoot)) { New-Item -ItemType Directory -Path $runRoot -Force | Out-Null }
@@ -1180,6 +1468,7 @@ function Run-BootTests {
   $script:TraceRunId = $runId
   $script:TraceLogLevel = $cfg.TraceLogLevel
   $script:TraceLogPath = Join-Path $cfg.ReportsDir ("trace-$runId.jsonl")
+  $script:BootTimeSamples = New-Object System.Collections.Generic.Queue[int]
   $lastThrottleLog = [datetime]::MinValue
 
   $tests = $plan.Tests
@@ -1210,6 +1499,8 @@ function Run-BootTests {
 
   $running = @()
   $results = @()
+  $staged = New-Object System.Collections.Generic.Queue[object]
+  $stageAhead = if ($cfg.StageAheadCount -gt 0) { $cfg.StageAheadCount } else { $cfg.MaxParallel }
   $port = $cfg.PortStart
   $total = ($end - $start + 1)
   $lastProgress = -1
@@ -1234,7 +1525,24 @@ function Run-BootTests {
       Adjust-Parallel -cfg $cfg -Stats $stats -EffectiveMaxParallel ([ref]$effectiveMaxParallel) -LastAdjust ([ref]$lastAdjust)
     }
     if ($effectiveMaxParallel -lt 1) { $effectiveMaxParallel = 1 }
-    while ($running.Count -lt $effectiveMaxParallel -and $queue.Count -gt 0) {
+    while ($staged.Count -lt $stageAhead -and $queue.Count -gt 0) {
+      $next = $queue.Dequeue()
+      $mods = @()
+      foreach ($idx in $next.Indices) { $mods += $modList[$idx] }
+      $stageResult = Stage-TestInstance -cfg $cfg -testId $next.Id -mods $mods -runRoot $runRoot -metaByPath $metaByPath -modById $modById
+      if ($stageResult.SkipResult) {
+        $skip = $stageResult.SkipResult
+        $skip | Add-Member -NotePropertyName RunId -NotePropertyValue $runId -Force
+        $results += $skip
+        Write-Trace -Level 'warn' -Event 'test_skip' -TestId $next.Id -Data @{
+          Reason = 'skip'
+          Pattern = $skip.Pattern
+        }
+        continue
+      }
+      $staged.Enqueue($stageResult.Stage)
+    }
+    while ($running.Count -lt $effectiveMaxParallel -and $staged.Count -gt 0) {
       if (-not $stats) { $stats = Get-SystemStats }
       if ($stats -and (Test-Throttle -cfg $cfg -Stats $stats)) {
         if (((Get-Date) - $lastThrottleLog).TotalSeconds -ge 5) {
@@ -1245,55 +1553,12 @@ function Run-BootTests {
         Start-Sleep -Milliseconds $delay
         break
       }
-      $next = $queue.Dequeue()
-      $mods = @()
-      foreach ($idx in $next.Indices) { $mods += $modList[$idx] }
-      $expanded = Expand-ModSet -mods $mods -metaByPath $metaByPath -modById $modById
-      if ($expanded.Missing.Count -gt 0) {
-        $results += [pscustomobject]@{
-          RunId = $runId
-          TestId = $next.Id
-          Status = 'skip'
-          DurationSec = 0
-          Pattern = "missing dependency: $($expanded.Missing -join ', ')"
-          LogDir = ''
-          Port = $null
-          StartedAt = (Get-Date).ToString('s')
-          CompletedAt = (Get-Date).ToString('s')
-        }
-        Write-Trace -Level 'warn' -Event 'test_skip' -TestId $next.Id -Data @{
-          Reason = 'missing_dependency'
-          Missing = $expanded.Missing
-        }
-        continue
-      }
-      $missingFiles = @()
-      foreach ($m in $expanded.Mods) {
-        if (-not (Test-Path $m.Path)) { $missingFiles += $m.Name }
-      }
-      if ($missingFiles.Count -gt 0) {
-        $results += [pscustomobject]@{
-          RunId = $runId
-          TestId = $next.Id
-          Status = 'skip'
-          DurationSec = 0
-          Pattern = "missing mod files: $($missingFiles -join ', ')"
-          LogDir = ''
-          Port = $null
-          StartedAt = (Get-Date).ToString('s')
-          CompletedAt = (Get-Date).ToString('s')
-        }
-        Write-Trace -Level 'warn' -Event 'test_skip' -TestId $next.Id -Data @{
-          Reason = 'missing_mod_files'
-          Missing = $missingFiles
-        }
-        continue
-      }
-      $inst = Start-Instance -cfg $cfg -testId $next.Id -mods $expanded.Mods -port $port -runRoot $runRoot
-      $modNames = if ((Resolve-TraceLevel -Value $script:TraceLogLevel) -ge 3) { @($expanded.Mods | ForEach-Object { $_.Name }) } else { @() }
-      Write-Trace -Level 'info' -Event 'instance_start' -TestId $next.Id -Data @{
+      $stage = $staged.Dequeue()
+      $inst = Start-StagedInstance -cfg $cfg -stage $stage -port $port
+      $modNames = if ((Resolve-TraceLevel -Value $script:TraceLogLevel) -ge 3) { @($stage.Mods | ForEach-Object { $_.Name }) } else { @() }
+      Write-Trace -Level 'info' -Event 'instance_start' -TestId $stage.TestId -Data @{
         Port = $port
-        ModCount = $expanded.Mods.Count
+        ModCount = $stage.Mods.Count
         Mods = $modNames
       }
       $running += $inst
@@ -1318,6 +1583,8 @@ function Run-BootTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Trim-InstanceLogs -cfg $cfg -inst $inst
+        Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         Write-Trace -Level 'info' -Event 'test_result' -TestId $inst.TestId -Data @{
           Status = 'pass'
           DurationSec = [int]$elapsed.TotalSeconds
@@ -1337,6 +1604,8 @@ function Run-BootTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Trim-InstanceLogs -cfg $cfg -inst $inst
+        Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         $tail = @{}
         if ((Resolve-TraceLevel -Value $script:TraceLogLevel) -ge 3) {
           $tail.StdoutTail = Get-LogTail -Path $inst.Stdout -Lines $cfg.DebugTailLines
@@ -1362,6 +1631,8 @@ function Run-BootTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Trim-InstanceLogs -cfg $cfg -inst $inst
+        Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         $tail = @{}
         if ((Resolve-TraceLevel -Value $script:TraceLogLevel) -ge 3) {
           $tail.StdoutTail = Get-LogTail -Path $inst.Stdout -Lines $cfg.DebugTailLines
@@ -1441,17 +1712,24 @@ function Invoke-JoinCommand {
   }
   if (-not $finished) {
     try { Stop-Process -Id $proc.Id -Force } catch {}
+    Trim-LogFile -Path $stdout -MaxBytes $cfg.LogMaxBytes
+    Trim-LogFile -Path $stderr -MaxBytes $cfg.LogMaxBytes
     return [pscustomobject]@{ Status = 'timeout'; Reason = 'join timeout'; LogDir = $logDir }
   }
   if ($proc.ExitCode -ne 0) {
+    Trim-LogFile -Path $stdout -MaxBytes $cfg.LogMaxBytes
+    Trim-LogFile -Path $stderr -MaxBytes $cfg.LogMaxBytes
     return [pscustomobject]@{ Status = 'fail'; Reason = "join exit code $($proc.ExitCode)"; LogDir = $logDir }
   }
+  Trim-LogFile -Path $stdout -MaxBytes $cfg.LogMaxBytes
+  Trim-LogFile -Path $stderr -MaxBytes $cfg.LogMaxBytes
   return [pscustomobject]@{ Status = 'pass'; Reason = 'join ok'; LogDir = $logDir }
 }
 
 function Run-JoinTests {
   param($cfg, $plan, [string]$RunId, [int]$StartIndex, [int]$Count, [int]$Limit)
   Ensure-Template -cfg $cfg
+  Apply-RunRetention -cfg $cfg
   $runId = if ($RunId) { $RunId } else { (Get-Date).ToString('yyyyMMdd-HHmmss') }
   $runRoot = Join-Path $cfg.RunsDir $runId
   if (-not (Test-Path $runRoot)) { New-Item -ItemType Directory -Path $runRoot -Force | Out-Null }
@@ -1462,6 +1740,7 @@ function Run-JoinTests {
   $script:TraceRunId = $runId
   $script:TraceLogLevel = $cfg.TraceLogLevel
   $script:TraceLogPath = Join-Path $cfg.ReportsDir ("trace-$runId.jsonl")
+  $script:BootTimeSamples = New-Object System.Collections.Generic.Queue[int]
   $lastThrottleLog = [datetime]::MinValue
 
   $tests = $plan.Tests
@@ -1512,6 +1791,8 @@ function Run-JoinTests {
   }
 
   $running = @()
+  $staged = New-Object System.Collections.Generic.Queue[object]
+  $stageAhead = if ($cfg.StageAheadCount -gt 0) { $cfg.StageAheadCount } else { $cfg.MaxParallel }
   $port = $cfg.PortStart
   $total = ($end - $start + 1)
   $lastProgress = -1
@@ -1536,7 +1817,24 @@ function Run-JoinTests {
       Adjust-Parallel -cfg $cfg -Stats $stats -EffectiveMaxParallel ([ref]$effectiveMaxParallel) -LastAdjust ([ref]$lastAdjust)
     }
     if ($effectiveMaxParallel -lt 1) { $effectiveMaxParallel = 1 }
-    while ($running.Count -lt $effectiveMaxParallel -and $queue.Count -gt 0) {
+    while ($staged.Count -lt $stageAhead -and $queue.Count -gt 0) {
+      $next = $queue.Dequeue()
+      $mods = @()
+      foreach ($idx in $next.Indices) { $mods += $modList[$idx] }
+      $stageResult = Stage-TestInstance -cfg $cfg -testId $next.Id -mods $mods -runRoot $runRoot -metaByPath $metaByPath -modById $modById
+      if ($stageResult.SkipResult) {
+        $skip = $stageResult.SkipResult
+        $skip | Add-Member -NotePropertyName RunId -NotePropertyValue $runId -Force
+        $results += $skip
+        Write-Trace -Level 'warn' -Event 'test_skip' -TestId $next.Id -Data @{
+          Reason = 'skip'
+          Pattern = $skip.Pattern
+        }
+        continue
+      }
+      $staged.Enqueue($stageResult.Stage)
+    }
+    while ($running.Count -lt $effectiveMaxParallel -and $staged.Count -gt 0) {
       if (-not $stats) { $stats = Get-SystemStats }
       if ($stats -and (Test-Throttle -cfg $cfg -Stats $stats)) {
         if (((Get-Date) - $lastThrottleLog).TotalSeconds -ge 5) {
@@ -1547,55 +1845,12 @@ function Run-JoinTests {
         Start-Sleep -Milliseconds $delay
         break
       }
-      $next = $queue.Dequeue()
-      $mods = @()
-      foreach ($idx in $next.Indices) { $mods += $modList[$idx] }
-      $expanded = Expand-ModSet -mods $mods -metaByPath $metaByPath -modById $modById
-      if ($expanded.Missing.Count -gt 0) {
-        $results += [pscustomobject]@{
-          RunId = $runId
-          TestId = $next.Id
-          Status = 'skip'
-          DurationSec = 0
-          Pattern = "missing dependency: $($expanded.Missing -join ', ')"
-          LogDir = ''
-          Port = $null
-          StartedAt = (Get-Date).ToString('s')
-          CompletedAt = (Get-Date).ToString('s')
-        }
-        Write-Trace -Level 'warn' -Event 'test_skip' -TestId $next.Id -Data @{
-          Reason = 'missing_dependency'
-          Missing = $expanded.Missing
-        }
-        continue
-      }
-      $missingFiles = @()
-      foreach ($m in $expanded.Mods) {
-        if (-not (Test-Path $m.Path)) { $missingFiles += $m.Name }
-      }
-      if ($missingFiles.Count -gt 0) {
-        $results += [pscustomobject]@{
-          RunId = $runId
-          TestId = $next.Id
-          Status = 'skip'
-          DurationSec = 0
-          Pattern = "missing mod files: $($missingFiles -join ', ')"
-          LogDir = ''
-          Port = $null
-          StartedAt = (Get-Date).ToString('s')
-          CompletedAt = (Get-Date).ToString('s')
-        }
-        Write-Trace -Level 'warn' -Event 'test_skip' -TestId $next.Id -Data @{
-          Reason = 'missing_mod_files'
-          Missing = $missingFiles
-        }
-        continue
-      }
-      $inst = Start-Instance -cfg $cfg -testId $next.Id -mods $expanded.Mods -port $port -runRoot $runRoot -AuthMode $cfg.JoinAuthMode
-      $modNames = if ((Resolve-TraceLevel -Value $script:TraceLogLevel) -ge 3) { @($expanded.Mods | ForEach-Object { $_.Name }) } else { @() }
-      Write-Trace -Level 'info' -Event 'instance_start' -TestId $next.Id -Data @{
+      $stage = $staged.Dequeue()
+      $inst = Start-StagedInstance -cfg $cfg -stage $stage -port $port -AuthMode $cfg.JoinAuthMode
+      $modNames = if ((Resolve-TraceLevel -Value $script:TraceLogLevel) -ge 3) { @($stage.Mods | ForEach-Object { $_.Name }) } else { @() }
+      Write-Trace -Level 'info' -Event 'instance_start' -TestId $stage.TestId -Data @{
         Port = $port
-        ModCount = $expanded.Mods.Count
+        ModCount = $stage.Mods.Count
         Mods = $modNames
         JoinAuthMode = $cfg.JoinAuthMode
       }
@@ -1625,6 +1880,8 @@ function Run-JoinTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Trim-InstanceLogs -cfg $cfg -inst $inst
+        Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         Write-Trace -Level 'info' -Event 'test_result' -TestId $inst.TestId -Data @{
           Status = $finalStatus
           DurationSec = [int]$elapsed.TotalSeconds
@@ -1645,6 +1902,8 @@ function Run-JoinTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Trim-InstanceLogs -cfg $cfg -inst $inst
+        Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         Write-Trace -Level 'warn' -Event 'test_result' -TestId $inst.TestId -Data @{
           Status = 'fail'
           DurationSec = [int]$elapsed.TotalSeconds
@@ -1664,6 +1923,8 @@ function Run-JoinTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Trim-InstanceLogs -cfg $cfg -inst $inst
+        Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         Write-Trace -Level 'warn' -Event 'test_result' -TestId $inst.TestId -Data @{
           Status = 'timeout'
           DurationSec = [int]$elapsed.TotalSeconds

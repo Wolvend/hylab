@@ -1167,6 +1167,17 @@ Notes:
     "JoinCommand": { "type": "string", "default": "" },
     "JoinTimeoutSeconds": { "type": "integer", "minimum": 0, "default": 60 },
     "JoinAuthMode": { "type": "string", "default": "authenticated" },
+    "ThinCloneEnabled": { "type": "boolean", "default": false },
+    "ThinCloneWritableDirs": { "type": "array", "items": { "type": "string" } },
+    "ThinCloneWritableFiles": { "type": "array", "items": { "type": "string" } },
+    "RunRetentionCount": { "type": "integer", "minimum": 0, "default": 0 },
+    "RunRetentionDays": { "type": "integer", "minimum": 0, "default": 0 },
+    "StageAheadCount": { "type": "integer", "minimum": 1, "default": 4 },
+    "LogMaxBytes": { "type": "integer", "minimum": 0, "default": 10485760 },
+    "BootTimeAdaptiveEnabled": { "type": "boolean", "default": true },
+    "BootTimeSampleWindow": { "type": "integer", "minimum": 1, "default": 6 },
+    "BootTimeHighSec": { "type": "integer", "minimum": 0, "default": 90 },
+    "BootTimeLowSec": { "type": "integer", "minimum": 0, "default": 30 },
     "ReadyPatterns": {
       "type": "array",
       "items": { "type": "string" },
@@ -1208,6 +1219,12 @@ Validation rules (logic beyond JSON Schema):
 - CpuAffinityMode must be all, round-robin, or mask:0xF.
 - JoinTimeoutSeconds must be >= 0.
 - JoinAuthMode must be one of: offline, authenticated.
+- RunRetentionCount must be >= 0.
+- RunRetentionDays must be >= 0.
+- StageAheadCount must be >= 1.
+- LogMaxBytes must be >= 0.
+- BootTimeSampleWindow must be >= 1.
+- BootTimeHighSec and BootTimeLowSec must be >= 0.
 
 ## 37.3 Inventory Schema (mods.json)
 This is the output of `scan`. Current script emits a subset; hashes are optional.

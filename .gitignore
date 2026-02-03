@@ -33,3 +33,6 @@ skills/
 # Scenario logs
 scenario-transcript.txt
 scenario.err.txt
+
+# Local helper scripts
+wsl-shrink.bat

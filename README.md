@@ -135,6 +135,53 @@ Defaults are safe for desktops, but can be overridden:
 - `HYLAB_PROCESS_PRIORITY` (default BelowNormal; use Normal for max speed)
 - `HYLAB_CPU_AFFINITY` (default all; use round-robin or mask:0xF)
 
+## Thin clone (save disk)
+By default, Hylab copies the entire server template per test. You can enable
+thin cloning to hardlink static files and junction static folders, reducing
+disk usage dramatically.
+
+Config keys:
+- `ThinCloneEnabled` (default false)
+- `ThinCloneWritableDirs` (default: mods, logs, universe, .cache)
+- `ThinCloneWritableFiles` (default: config.json, permissions.json, whitelist.json, bans.json)
+
+Env overrides:
+- `HYLAB_THIN_CLONE=true`
+- `HYLAB_THIN_CLONE_WRITABLE_DIRS="mods,logs,universe,.cache"`
+- `HYLAB_THIN_CLONE_WRITABLE_FILES="config.json,permissions.json,whitelist.json,bans.json"`
+
+Note: thin clone only works when `TemplateDir` and `RunsDir` are on the same drive.
+
+## Run retention (auto-cleanup)
+You can automatically delete old runs to avoid disk bloat:
+- `RunRetentionCount` (keep N most recent runs; 0 disables)
+- `RunRetentionDays` (delete runs older than N days; 0 disables)
+
+Env overrides:
+- `HYLAB_RUN_RETENTION_COUNT=20`
+- `HYLAB_RUN_RETENTION_DAYS=7`
+
+## Stage-ahead (prefetch)
+Stage test folders ahead of time so boot start is fast and overlaps with
+existing server runs:
+- `StageAheadCount` (default: MaxParallel)
+- `HYLAB_STAGE_AHEAD_COUNT=4`
+
+## Log size cap
+Limit stdout/stderr size per test to avoid giant logs:
+- `LogMaxBytes` (default: 10485760)
+- `HYLAB_LOG_MAX_BYTES=10485760`
+
+## Boot-time adaptive backoff
+Automatically reduce parallelism if average boot time increases:
+- `BootTimeAdaptiveEnabled` (default true)
+- `BootTimeSampleWindow` (default 6)
+- `BootTimeHighSec` / `BootTimeLowSec` (defaults derived from BootTimeout)
+- `HYLAB_BOOT_TIME_ADAPTIVE=true`
+- `HYLAB_BOOT_TIME_WINDOW=6`
+- `HYLAB_BOOT_TIME_HIGH=90`
+- `HYLAB_BOOT_TIME_LOW=30`
+
 ## Adaptive parallelism (smart spikes)
 Hylab can automatically lower or raise parallelism based on CPU/RAM:
 - `HYLAB_ADAPTIVE_ENABLED` (default true)
