@@ -1178,6 +1178,8 @@ Notes:
     "BootTimeSampleWindow": { "type": "integer", "minimum": 1, "default": 6 },
     "BootTimeHighSec": { "type": "integer", "minimum": 0, "default": 90 },
     "BootTimeLowSec": { "type": "integer", "minimum": 0, "default": 30 },
+    "PrunePassArtifacts": { "type": "boolean", "default": false },
+    "PruneSkipArtifacts": { "type": "boolean", "default": false },
     "ReadyPatterns": {
       "type": "array",
       "items": { "type": "string" },
@@ -1225,6 +1227,7 @@ Validation rules (logic beyond JSON Schema):
 - LogMaxBytes must be >= 0.
 - BootTimeSampleWindow must be >= 1.
 - BootTimeHighSec and BootTimeLowSec must be >= 0.
+- PrunePassArtifacts and PruneSkipArtifacts must be boolean.
 
 ## 37.3 Inventory Schema (mods.json)
 This is the output of `scan`. Current script emits a subset; hashes are optional.

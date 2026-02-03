@@ -70,6 +70,8 @@
   "BootTimeSampleWindow": 6,
   "BootTimeHighSec": 90,
   "BootTimeLowSec": 30,
+  "PrunePassArtifacts": false,
+  "PruneSkipArtifacts": false,
   "PairwiseGroupSize": 10,
   "PairwiseTriesPerGroup": 200,
   "PairwiseSeed": 1337

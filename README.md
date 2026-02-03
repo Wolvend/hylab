@@ -99,6 +99,9 @@ Example:
 - `reports/<RunId>.junit.xml`: CI-friendly results (from `report`)
 - `reports/trace-<RunId>.jsonl`: structured trace events
 - `reports/resource-<RunId>.csv`: CPU/RAM samples
+- `runs/<runId>/test-XXXX/mods.txt`: mod list for each test (small, AI-friendly)
+- `runs/<runId>/test-XXXX/mods.json`: mod list + hashes for each test
+- `runs/<runId>/index.json`: tiny per-run index (testId -> status + mod list paths)
 
 ## Config and overrides
 - Copy `config/hylab.example.json` to `config/hylab.json` and edit paths.
@@ -171,6 +174,14 @@ existing server runs:
 Limit stdout/stderr size per test to avoid giant logs:
 - `LogMaxBytes` (default: 10485760)
 - `HYLAB_LOG_MAX_BYTES=10485760`
+
+## Prune pass/skip artifacts (smallest runs)
+Delete heavy folders for passing or skipped tests, while keeping the AI index
+and mod lists:
+- `PrunePassArtifacts` (default false)
+- `PruneSkipArtifacts` (default false)
+- `HYLAB_PRUNE_PASS=true`
+- `HYLAB_PRUNE_SKIP=true`
 
 ## Boot-time adaptive backoff
 Automatically reduce parallelism if average boot time increases:

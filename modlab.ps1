@@ -88,6 +88,8 @@ function Apply-EnvOverrides {
     BootTimeSampleWindow = $env:HYLAB_BOOT_TIME_WINDOW
     BootTimeHighSec = $env:HYLAB_BOOT_TIME_HIGH
     BootTimeLowSec = $env:HYLAB_BOOT_TIME_LOW
+    PrunePassArtifacts = $env:HYLAB_PRUNE_PASS
+    PruneSkipArtifacts = $env:HYLAB_PRUNE_SKIP
     DepOverridesPath = $env:HYLAB_DEP_OVERRIDES
     ExcludesPath = $env:HYLAB_EXCLUDES
     ResourceSampleIntervalSec = $env:HYLAB_RESOURCE_SAMPLE_INTERVAL_SEC
@@ -137,6 +139,8 @@ function Apply-EnvOverrides {
         $cfg.$k = Convert-ToBool -Value $v -Default $cfg.ThinCloneEnabled
       } elseif ($k -eq 'BootTimeAdaptiveEnabled') {
         $cfg.$k = Convert-ToBool -Value $v -Default $cfg.BootTimeAdaptiveEnabled
+      } elseif ($k -in @('PrunePassArtifacts','PruneSkipArtifacts')) {
+        $cfg.$k = Convert-ToBool -Value $v -Default $cfg.$k
       } else {
         $cfg.$k = $v
       }
@@ -193,6 +197,8 @@ function Load-Config {
   if ($null -eq $cfg.BootTimeSampleWindow) { $cfg.BootTimeSampleWindow = 6 }
   if ($null -eq $cfg.BootTimeHighSec) { $cfg.BootTimeHighSec = [int][math]::Max(30, [math]::Round($cfg.BootTimeoutSeconds * 0.6)) }
   if ($null -eq $cfg.BootTimeLowSec) { $cfg.BootTimeLowSec = [int][math]::Max(10, [math]::Round($cfg.BootTimeoutSeconds * 0.3)) }
+  if ($null -eq $cfg.PrunePassArtifacts) { $cfg.PrunePassArtifacts = $false }
+  if ($null -eq $cfg.PruneSkipArtifacts) { $cfg.PruneSkipArtifacts = $false }
   Apply-EnvOverrides -cfg $cfg
   if ($Parallel) { $cfg.MaxParallel = $Parallel }
   if ($Xmx) { $cfg.Xmx = $Xmx }
@@ -216,7 +222,7 @@ function Validate-Config {
     'ReprosDir','LogsDir','CacheDir','UseAOTCache','PortStart','PortEnd','MaxParallel','Xmx','Xms',
     'DepOverridesPath','ExcludesPath','ErrorIgnorePatterns','ResourceSampleIntervalSec','TraceLogLevel','DebugTailLines','ThrottleCpuPct','ThrottleMemPct','ThrottleCheckIntervalMs','ResourceLogIntervalSec','ProcessPriority','CpuAffinityMode',
     'AdaptiveThrottleEnabled','AdaptiveMinParallel','AdaptiveMaxParallel','AdaptiveSampleWindow','AdaptiveSpikePct','AdaptiveSpikeHoldSec','AdaptiveCpuHighPct','AdaptiveCpuLowPct','AdaptiveMemHighPct','AdaptiveMemLowPct','AdaptiveStepUp','AdaptiveStepDown','AdaptiveCooldownSec',
-    'BootTimeoutSeconds','JoinCommand','JoinTimeoutSeconds','JoinAuthMode','ThinCloneEnabled','ThinCloneWritableDirs','ThinCloneWritableFiles','RunRetentionCount','RunRetentionDays','StageAheadCount','LogMaxBytes','BootTimeAdaptiveEnabled','BootTimeSampleWindow','BootTimeHighSec','BootTimeLowSec','ReadyPatterns','ErrorPatterns','PairwiseGroupSize',
+    'BootTimeoutSeconds','JoinCommand','JoinTimeoutSeconds','JoinAuthMode','ThinCloneEnabled','ThinCloneWritableDirs','ThinCloneWritableFiles','RunRetentionCount','RunRetentionDays','StageAheadCount','LogMaxBytes','BootTimeAdaptiveEnabled','BootTimeSampleWindow','BootTimeHighSec','BootTimeLowSec','PrunePassArtifacts','PruneSkipArtifacts','ReadyPatterns','ErrorPatterns','PairwiseGroupSize',
     'PairwiseTriesPerGroup','PairwiseSeed'
   )
   $unknown = $cfg.PSObject.Properties.Name | Where-Object { $allowed -notcontains $_ }
@@ -277,6 +283,8 @@ function Validate-Config {
   if ($cfg.BootTimeSampleWindow -lt 1) { throw "BootTimeSampleWindow must be >= 1." }
   if ($cfg.BootTimeHighSec -lt 0) { throw "BootTimeHighSec must be >= 0." }
   if ($cfg.BootTimeLowSec -lt 0) { throw "BootTimeLowSec must be >= 0." }
+  if ($null -ne $cfg.PrunePassArtifacts -and -not ($cfg.PrunePassArtifacts -is [bool])) { throw "PrunePassArtifacts must be boolean." }
+  if ($null -ne $cfg.PruneSkipArtifacts -and -not ($cfg.PruneSkipArtifacts -is [bool])) { throw "PruneSkipArtifacts must be boolean." }
   if (-not ($cfg.ReadyPatterns -is [System.Collections.IEnumerable])) { throw "ReadyPatterns must be an array." }
   if (-not ($cfg.ErrorPatterns -is [System.Collections.IEnumerable])) { throw "ErrorPatterns must be an array." }
   if ($cfg.ErrorIgnorePatterns -and -not ($cfg.ErrorIgnorePatterns -is [System.Collections.IEnumerable])) { throw "ErrorIgnorePatterns must be an array." }
@@ -562,6 +570,75 @@ function Copy-Template {
   }
 }
 
+function Write-ModListFiles {
+  param([string]$TestDir, $Mods)
+  if (-not $TestDir -or -not $Mods) { return }
+  $txt = Join-Path $TestDir 'mods.txt'
+  $lines = @($Mods | ForEach-Object { $_.Name })
+  $lines | Set-Content -Path $txt -Encoding Ascii
+
+  $jsonPath = Join-Path $TestDir 'mods.json'
+  $payload = @()
+  foreach ($m in $Mods) {
+    $hash = ''
+    if ($m.PSObject.Properties.Name -contains 'Hash') { $hash = $m.Hash }
+    $payload += [pscustomobject]@{ Name = $m.Name; Hash = $hash }
+  }
+  $payload | ConvertTo-Json -Depth 3 | Set-Content -Path $jsonPath -Encoding Ascii
+}
+
+function Update-RunIndex {
+  param([string]$RunRoot, [int]$TestId, [string]$Status, [int]$DurationSec, [string]$Pattern, [int]$Port, [string]$TestDir, [string]$StartedAt, [string]$CompletedAt)
+  if (-not $RunRoot) { return }
+  $indexPath = Join-Path $RunRoot 'index.json'
+  $payload = $null
+  if (Test-Path $indexPath) {
+    try { $payload = Get-Content -Raw -Path $indexPath | ConvertFrom-Json } catch { $payload = $null }
+  }
+  if (-not $payload) {
+    $payload = [pscustomobject]@{
+      SchemaVersion = '1.0.0'
+      RunId = (Split-Path -Leaf $RunRoot)
+      GeneratedAt = (Get-Date).ToString('s')
+      Tests = @()
+    }
+  }
+  $modTxt = Join-Path $TestDir 'mods.txt'
+  $modJson = Join-Path $TestDir 'mods.json'
+  $entry = [pscustomobject]@{
+    TestId = $TestId
+    Status = $Status
+    DurationSec = $DurationSec
+    Pattern = $Pattern
+    Port = $Port
+    TestDir = $TestDir
+    ModsTxt = (Split-Path -Leaf $modTxt)
+    ModsJson = (Split-Path -Leaf $modJson)
+    StartedAt = $StartedAt
+    CompletedAt = $CompletedAt
+  }
+  $tests = @()
+  if ($payload.Tests) { $tests = @($payload.Tests | Where-Object { $_.TestId -ne $TestId }) }
+  $tests += $entry
+  $payload.Tests = $tests
+  $payload.GeneratedAt = (Get-Date).ToString('s')
+  $payload | ConvertTo-Json -Depth 6 | Set-Content -Path $indexPath -Encoding Ascii
+}
+
+function Prune-TestArtifacts {
+  param($cfg, [string]$TestDir, [string]$Status)
+  if (-not $TestDir -or -not (Test-Path $TestDir)) { return $false }
+  $doPrune = (($Status -eq 'pass') -and $cfg.PrunePassArtifacts) -or (($Status -eq 'skip') -and $cfg.PruneSkipArtifacts)
+  if (-not $doPrune) { return $false }
+  foreach ($name in @('server','logs','join')) {
+    $p = Join-Path $TestDir $name
+    if (Test-Path $p) {
+      try { Remove-Item -Recurse -Force -Path $p } catch {}
+    }
+  }
+  return $true
+}
+
 function Stage-TestInstance {
   param($cfg, $testId, $mods, [string]$runRoot, $metaByPath, $modById)
   if ($metaByPath -and $modById) {
@@ -618,6 +695,7 @@ function Stage-TestInstance {
       Copy-Item -Path $m.Path -Destination $modsDir -Force
     }
   }
+  Write-ModListFiles -TestDir $testDir -Mods $mods
 
   return [pscustomobject]@{
     SkipResult = $null
@@ -1164,6 +1242,7 @@ function Start-Instance {
       Copy-Item -Path $m.Path -Destination $modsDir -Force
     }
   }
+  Write-ModListFiles -TestDir $testDir -Mods $mods
 
   $stdout = Join-Path $logDir 'stdout.log'
   $stderr = Join-Path $logDir 'stderr.log'
@@ -1222,6 +1301,7 @@ function Start-ScenarioInstance {
   foreach ($m in $mods) {
     Copy-Item -Path $m.Path -Destination $modsDir -Force
   }
+  Write-ModListFiles -TestDir $testDir -Mods $mods
 
   $stdout = Join-Path $logDir 'stdout.log'
   $stderr = Join-Path $logDir 'stderr.log'
@@ -1583,7 +1663,10 @@ function Run-BootTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
-        Trim-InstanceLogs -cfg $cfg -inst $inst
+        Update-RunIndex -RunRoot $runRoot -TestId $inst.TestId -Status 'pass' -DurationSec ([int]$elapsed.TotalSeconds) -Pattern $status.Pattern -Port $inst.Port -TestDir $inst.TestDir -StartedAt $inst.StartTime.ToString('s') -CompletedAt (Get-Date).ToString('s')
+        if (-not (Prune-TestArtifacts -cfg $cfg -TestDir $inst.TestDir -Status 'pass')) {
+          Trim-InstanceLogs -cfg $cfg -inst $inst
+        }
         Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         Write-Trace -Level 'info' -Event 'test_result' -TestId $inst.TestId -Data @{
           Status = 'pass'
@@ -1604,6 +1687,7 @@ function Run-BootTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Update-RunIndex -RunRoot $runRoot -TestId $inst.TestId -Status 'fail' -DurationSec ([int]$elapsed.TotalSeconds) -Pattern $status.Pattern -Port $inst.Port -TestDir $inst.TestDir -StartedAt $inst.StartTime.ToString('s') -CompletedAt (Get-Date).ToString('s')
         Trim-InstanceLogs -cfg $cfg -inst $inst
         Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         $tail = @{}
@@ -1631,6 +1715,7 @@ function Run-BootTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Update-RunIndex -RunRoot $runRoot -TestId $inst.TestId -Status 'timeout' -DurationSec ([int]$elapsed.TotalSeconds) -Pattern '' -Port $inst.Port -TestDir $inst.TestDir -StartedAt $inst.StartTime.ToString('s') -CompletedAt (Get-Date).ToString('s')
         Trim-InstanceLogs -cfg $cfg -inst $inst
         Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         $tail = @{}
@@ -1880,7 +1965,10 @@ function Run-JoinTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
-        Trim-InstanceLogs -cfg $cfg -inst $inst
+        Update-RunIndex -RunRoot $runRoot -TestId $inst.TestId -Status $finalStatus -DurationSec ([int]$elapsed.TotalSeconds) -Pattern $pattern -Port $inst.Port -TestDir $inst.TestDir -StartedAt $inst.StartTime.ToString('s') -CompletedAt (Get-Date).ToString('s')
+        if (-not (Prune-TestArtifacts -cfg $cfg -TestDir $inst.TestDir -Status $finalStatus)) {
+          Trim-InstanceLogs -cfg $cfg -inst $inst
+        }
         Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         Write-Trace -Level 'info' -Event 'test_result' -TestId $inst.TestId -Data @{
           Status = $finalStatus
@@ -1902,6 +1990,7 @@ function Run-JoinTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Update-RunIndex -RunRoot $runRoot -TestId $inst.TestId -Status 'fail' -DurationSec ([int]$elapsed.TotalSeconds) -Pattern $status.Pattern -Port $inst.Port -TestDir $inst.TestDir -StartedAt $inst.StartTime.ToString('s') -CompletedAt (Get-Date).ToString('s')
         Trim-InstanceLogs -cfg $cfg -inst $inst
         Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         Write-Trace -Level 'warn' -Event 'test_result' -TestId $inst.TestId -Data @{
@@ -1923,6 +2012,7 @@ function Run-JoinTests {
           StartedAt = $inst.StartTime.ToString('s')
           CompletedAt = (Get-Date).ToString('s')
         }
+        Update-RunIndex -RunRoot $runRoot -TestId $inst.TestId -Status 'timeout' -DurationSec ([int]$elapsed.TotalSeconds) -Pattern '' -Port $inst.Port -TestDir $inst.TestDir -StartedAt $inst.StartTime.ToString('s') -CompletedAt (Get-Date).ToString('s')
         Trim-InstanceLogs -cfg $cfg -inst $inst
         Add-BootTimeSample -cfg $cfg -Seconds ([int]$elapsed.TotalSeconds)
         Write-Trace -Level 'warn' -Event 'test_result' -TestId $inst.TestId -Data @{
