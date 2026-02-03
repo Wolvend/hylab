@@ -18,3 +18,18 @@ universe/
 # Logs and temp
 *.log
 *.tmp
+
+# Local env/config (do not commit)
+config/hylab.json
+config/dep-overrides.json
+config/excludes.txt
+
+# Local caches/templates/builds
+cache/
+templates/
+dist/
+skills/
+
+# Scenario logs
+scenario-transcript.txt
+scenario.err.txt

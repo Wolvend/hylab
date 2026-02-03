@@ -1,0 +1,3 @@
+# One entry per line (filename or mod ID)
+ExampleMod.zip
+Example:ModId

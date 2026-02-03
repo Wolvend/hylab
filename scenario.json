@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "type": "wait-for-ready",
+      "timeoutSeconds": 5
+    },
+    {
+      "type": "expect-log",
+      "pattern": "Ready",
+      "timeoutSeconds": 2
+    }
+  ]
+}
